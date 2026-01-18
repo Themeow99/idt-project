@@ -1,0 +1,146 @@
+[10:57 am, 18/01/2026] Krutika: from flask import Flask, request, jsonify
+import firebase_admin
+from firebase_admin import credentials, firestore, messaging
+from math import radians, cos, sin, asin, sqrt
+import datetime
+
+# --------------------------------
+# FIREBASE INITIALIZATION
+# --------------------------------
+cred = credentials.Certificate("firebase_key.json")  # your firebase key
+firebase_admin.initialize_app(cred)
+db = firestore.client()
+
+# --------------------------------
+# FLASK APP
+# --------------------------------
+app = Flask(_name_)
+
+# --------------------------------
+# DISTANCE CALCULATION (Haversine)
+# --------------------------------
+def haversine(lat1, lon1, lat2, lon2):
+    R = 6371000  # Earth radius in meters
+
+    dlat = radians(lat2 - lat1)
+    dlon = radians(lon2 - l…
+[10:57 am, 18/01/2026] Krutika: from flask import Flask, request, jsonify
+from firebase_config import db
+from utils import haversine
+from firebase_admin import messaging
+import datetime
+
+app = Flask(_name_)
+
+# -----------------------------
+# Register / Update User Location
+# -----------------------------
+@app.route("/update_location", methods=["POST"])
+def update_location():
+    data = request.json
+
+    user_id = data["user_id"]
+    lat = data["latitude"]
+    lon = data["longitude"]
+    fcm_token = data["fcm_token"]
+
+    db.collection("users").document(user_id).set({
+        "latitude": lat,
+        "longitude": lon,
+        "fcm_token": fcm_token,
+        "updated_at": datetime.datetime.utcnow()
+    })
+
+    return jsonify({"status": "location updated"}), 200
+
+
+# -----------------------------
+# SOS Trigger
+# -----------------------------
+@app.route("/sos", methods=["POST"])
+def sos():
+    data = request.json
+
+    user_id = data["user_id"]
+    lat = data["latitude"]
+    lon = data["longitude"]
+
+    user_ref = db.collection("users").document(user_id)
+    user_ref.update({
+        "sos_active": True,
+        "sos_time": datetime.datetime.utcnow()
+    })
+
+    users = db.collection("users").stream()
+
+    notify_500m = []
+    tag_100m = []
+
+    for user in users:
+        if user.id == user_id:
+            continue
+
+        u = user.to_dict()
+        if "latitude" not in u:
+            continue
+
+        distance = haversine(lat, lon, u["latitude"], u["longitude"])
+
+        if distance <= 100:
+            tag_100m.append(u["fcm_token"])
+        elif distance <= 500:
+            notify_500m.append(u["fcm_token"])
+
+    send_notifications(tag_100m, notify_500m, lat, lon)
+
+    return jsonify({
+        "status": "SOS sent",
+        "100m_users": len(tag_100m),
+        "500m_users": len(notify_500m)
+    }), 200
+
+
+# -----------------------------
+# Send Push Notifications
+# -----------------------------
+def send_notifications(tagged, nearby, lat, lon):
+    location_link = f"https://maps.google.com/?q={lat},{lon}"
+
+    if tagged:
+        message = messaging.MulticastMessage(
+            tokens=tagged,
+            notification=messaging.Notification(
+                title="🚨 EMERGENCY VERY CLOSE",
+                body=f"Someone needs help within 100m.\n{location_link}"
+            )
+        )
+        messaging.send_multicast(message)
+
+    if nearby:
+        message = messaging.MulticastMessage(
+            tokens=nearby,
+            notification=messaging.Notification(
+                title="Emergency Nearby",
+                body=f"Someone nearby needs help.\n{location_link}"
+            )
+        )
+        messaging.send_multicast(message)
+
+
+# -----------------------------
+# Stop SOS
+# -----------------------------
+@app.route("/stop_sos", methods=["POST"])
+def stop_sos():
+    data = request.json
+    user_id = data["user_id"]
+
+    db.collection("users").document(user_id).update({
+        "sos_active": False
+    })
+
+    return jsonify({"status": "SOS stopped"}), 200
+
+
+if _name_ == "_main_":
+    app.run(debug=True)
